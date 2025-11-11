@@ -1,6 +1,11 @@
 const { v4: uuidv4 } = require("uuid");
 
-import { Injectable, forwardRef, Inject } from "@nestjs/common";
+import {
+  Injectable,
+  forwardRef,
+  Inject,
+  InternalServerErrorException,
+} from "@nestjs/common";
 import { ScheduleRepository } from "./schedule.repository";
 import { ScheduleResponse } from "./dto/schedule.response";
 import { ScheduleRequest } from "./dto/schedule.request";
@@ -11,6 +16,7 @@ import { TransactionService } from "../transaction/transaction.service";
 import { CronJob } from "cron";
 import { NotificationService } from "../notification/notification.service";
 import { NotificationRequest } from "../notification/dto/notification.request";
+import { UserResponse } from "../user/dto/user.response";
 
 @Injectable()
 export class ScheduleService {
@@ -24,6 +30,9 @@ export class ScheduleService {
   ) {
     this.autoCancelPendingSchedule();
     this.autoSendScheduleReminder();
+    this.autoCheckScheduleResult();
+    this.autoWarnScheduleResult();
+    this.autoCancelWarningSchedule();
   }
 
   async getAllSchedules(): Promise<ScheduleResponse[]> {
@@ -53,6 +62,14 @@ export class ScheduleService {
     schedule: ScheduleRequest
   ): Promise<ScheduleResponse> {
     return await this.scheduleRepository.checkExistingSchedule(schedule);
+  }
+
+  async checkScheduleByPatientIdAndTime(
+    schedule: ScheduleRequest
+  ): Promise<ScheduleResponse> {
+    return await this.scheduleRepository.checkScheduleByPatientIdAndTime(
+      schedule
+    );
   }
 
   async createSchedule(schedule: ScheduleRequest, doctor_id: string) {
@@ -94,13 +111,10 @@ export class ScheduleService {
           return hourStart === BigInt(scheduleStartTimeBigInt);
         });
       });
-      const dayOfWeek = date.getDay();
-      if (dayOfWeek !== 0 && dayOfWeek !== 6) {
-        availableSchedule.push({
-          date: formattedDate,
-          hours: filterHours,
-        });
-      }
+      availableSchedule.push({
+        date: formattedDate,
+        hours: filterHours,
+      });
     }
     return availableSchedule;
   }
@@ -114,7 +128,67 @@ export class ScheduleService {
   }
 
   async acceptSchedule(schedule_id: string) {
+    const schedule = await this.scheduleRepository.getScheduleById(schedule_id);
+    const consultation =
+      await this.consultationScheduleService.getConsultationScheduleByScheduleId(
+        schedule_id
+      );
+    const duplicateSchedules =
+      await this.scheduleRepository.checkScheduleByDoctorIdAndTime(
+        schedule_id,
+        {
+          doctor_id: consultation.doctor_id,
+          schedule_start_time: schedule.schedule_start_time,
+        } as ScheduleRequest
+      );
+    if (duplicateSchedules) {
+      for (const item of duplicateSchedules) {
+        const duplicateSchedule = (<any>item).dataValues;
+        console.log("Duplicate schedule: ", duplicateSchedule);
+        try {
+          if (duplicateSchedule.status_id === 1) {
+            throw new InternalServerErrorException(
+              "Bạn đã có lịch khám vào thời điểm này, không thể chấp nhận lịch khám hiện tại"
+            );
+          } else {
+            await Promise.all([
+              this.rejectSchedule(duplicateSchedule.id),
+              this.notificationService.add({
+                doctor_id:
+                  duplicateSchedule.consultation_schedules?.[0]?.doctor_id,
+                patient_id: duplicateSchedule.patient_id,
+                schedule_start_time: duplicateSchedule.schedule_start_time,
+                is_seen: false,
+                type: 0,
+                status: 3,
+                reject_reason:
+                  "Bác sĩ đã chấp nhận lịch khám khác vào thời điểm này",
+              } as NotificationRequest),
+              this.notificationService.add({
+                doctor_id:
+                  duplicateSchedule.consultation_schedules?.[0]?.doctor_id,
+                patient_id: duplicateSchedule.patient_id,
+                schedule_start_time: duplicateSchedule.schedule_start_time,
+                is_seen: false,
+                type: 1,
+                status: 3,
+              } as NotificationRequest),
+            ]);
+            return await this.scheduleRepository.acceptSchedule(schedule_id);
+          }
+        } catch (error) {
+          throw new InternalServerErrorException(
+            "Bạn đã có lịch khám vào thời điểm này, không thể chấp nhận lịch khám hiện tại"
+          );
+        }
+      }
+    }
     return await this.scheduleRepository.acceptSchedule(schedule_id);
+  }
+
+  async rejectSchedule(schedule_id: string) {
+    await this.scheduleRepository.getScheduleById(schedule_id);
+    return await this.scheduleRepository.rejectSchedule(schedule_id);
   }
 
   async updateSchedule(schedule: ScheduleRequest, id: string) {
@@ -140,9 +214,9 @@ export class ScheduleService {
   }
 
   async getScheduleByPatientId(
-    patient_id: string
+    patient_id: string,
+    patient?: UserResponse
   ): Promise<ScheduleResponse[]> {
-    const patient = await this.userService.getUserById(patient_id);
     const schedules = await this.scheduleRepository.getScheduleByPatientId(
       patient_id
     );
@@ -155,15 +229,17 @@ export class ScheduleService {
       const doctor = await this.userService.getUserById(consultation.doctor_id);
       scheduleList.push({
         ...(<any>schedule).dataValues,
-        patient_name: patient.username,
+        patient_name: patient?.username,
         doctor_name: doctor.username,
       });
     }
     return scheduleList;
   }
 
-  async getScheduleByDoctorId(doctor_id: string): Promise<ScheduleResponse[]> {
-    const doctor = await this.userService.getUserById(doctor_id);
+  async getScheduleByDoctorId(
+    doctor_id: string,
+    doctor?: UserResponse
+  ): Promise<ScheduleResponse[]> {
     const consultationSchedules =
       await this.consultationScheduleService.getConsultationScheduleByDoctorId(
         doctor_id
@@ -173,12 +249,14 @@ export class ScheduleService {
       const schedule = await this.scheduleRepository.getScheduleById(
         item.schedule_id
       );
-      const patient = await this.userService.getUserById(schedule.patient_id);
-      scheduleList.push({
-        ...(<any>schedule).dataValues,
-        patient_name: patient.username,
-        doctor_name: doctor.username,
-      });
+      if (schedule.status_id !== 3) {
+        const patient = await this.userService.getUserById(schedule.patient_id);
+        scheduleList.push({
+          ...(<any>schedule).dataValues,
+          patient_name: patient.username,
+          doctor_name: doctor?.username,
+        });
+      }
     }
     return scheduleList;
   }
@@ -197,6 +275,7 @@ export class ScheduleService {
       const id = item.schedule_id;
       const schedule = await this.getScheduleById(id);
       if (
+        schedule.status_id !== 3 &&
         schedule.schedule_start_time >= startTime &&
         schedule.schedule_start_time < startTime + TWO_WEEKS_IN_SECONDS
       )
@@ -207,7 +286,7 @@ export class ScheduleService {
 
   async cancelPendingSchedule() {
     const pendingSchedules = await this.scheduleRepository.getPendingSchedule();
-    const ALLOW_TIME = 12 * 60 * 60 * 1000;
+    const ALLOW_TIME = 24 * 60 * 60 * 1000;
     const currentTime = new Date().getTime();
     for (const schedule of pendingSchedules) {
       const consultation =
@@ -274,6 +353,88 @@ export class ScheduleService {
           `Running auto send schedule reminder at ${new Date().toLocaleTimeString()}, ${new Date().toLocaleDateString()}`
         );
         await this.sendScheduleReminder();
+      },
+      start: true,
+    });
+  }
+
+  async checkScheduleResult() {
+    const currentTime = Math.floor(new Date().getTime() / 1000);
+    const acceptedSchedules =
+      await this.scheduleRepository.getAcceptedSchedule();
+    for (const schedule of acceptedSchedules) {
+      if (
+        Number(schedule.schedule_end_time) === currentTime &&
+        schedule.schedule_result === 4
+      ) {
+        await this.updateScheduleResult(schedule.id, 0);
+      }
+      if (Number(schedule.schedule_start_time) === currentTime) {
+        await this.updateScheduleResult(schedule.id, 4);
+      }
+    }
+  }
+
+  private async autoCheckScheduleResult() {
+    const job = CronJob.from({
+      cronTime: "0,30 8-21 * * *",
+      onTick: async () => {
+        console.log(
+          `Running auto check schedule result at ${new Date().toLocaleTimeString()}, ${new Date().toLocaleDateString()}`
+        );
+        await this.checkScheduleResult();
+      },
+      start: true,
+    });
+  }
+
+  async warnScheduleResult() {
+    let schedules = await this.scheduleRepository.getPendingResultSchedule();
+    for (const schedule of schedules) {
+      await this.updateScheduleResult(schedule.id, 5);
+      const consultation =
+        await this.consultationScheduleService.getConsultationScheduleByScheduleId(
+          schedule.id
+        );
+      await this.notificationService.add({
+        doctor_id: consultation.doctor_id,
+        patient_id: schedule.patient_id,
+        schedule_start_time: schedule.schedule_start_time,
+        is_seen: false,
+        type: 1,
+        status: 6,
+      } as NotificationRequest);
+    }
+  }
+
+  private async autoWarnScheduleResult() {
+    const job = CronJob.from({
+      cronTime: "00 10 * * *",
+      onTick: async () => {
+        console.log(
+          `Running auto warn schedule result at ${new Date().toLocaleTimeString()}, ${new Date().toLocaleDateString()}`
+        );
+        await this.warnScheduleResult();
+      },
+      start: true,
+    });
+  }
+
+  async cancelWarningSchedule() {
+    let schedules = await this.scheduleRepository.getWarningResultSchedule();
+    for (const schedule of schedules) {
+      await this.updateScheduleResult(schedule.id, 3);
+    }
+  }
+
+  private async autoCancelWarningSchedule() {
+    const job = CronJob.from({
+      cronTime: "30 9 * * *",
+      onTick: async () => {
+        console.log(
+          `Running auto cancel warning schedule at ${new Date().toLocaleTimeString()}, ${new Date().toLocaleDateString()}`
+        );
+        await this.cancelWarningSchedule();
       },
       start: true,
     });

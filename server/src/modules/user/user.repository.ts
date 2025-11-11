@@ -3,12 +3,13 @@ import { InjectModel } from "@nestjs/sequelize";
 import { UserModel } from "../../entities/user.model";
 import { UserRequest } from "./dto/user.request";
 import { UserResponse } from "./dto/user.response";
+import { Op } from "sequelize";
 
 @Injectable()
 export class UserRepository {
   constructor(
     @InjectModel(UserModel)
-    private userModel: typeof UserModel,
+    private userModel: typeof UserModel
   ) {}
 
   async getAllUsers(): Promise<UserResponse[]> {
@@ -18,6 +19,20 @@ export class UserRepository {
   async getAllDoctors(): Promise<UserResponse[]> {
     return await this.userModel.findAll({
       where: { role_id: 2 },
+    });
+  }
+
+  async getAllAdmin(): Promise<UserResponse[]> {
+    return await this.userModel.findAll({
+      where: { role_id: 1 },
+    });
+  }
+
+  async getAllExceptAdmin(): Promise<UserResponse[]> {
+    return await this.userModel.findAll({
+      where: {
+        role_id: { [Op.in]: [2, 3] },
+      },
     });
   }
 

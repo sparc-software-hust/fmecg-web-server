@@ -153,6 +153,15 @@ export const User: React.FC = () => {
       ],
       onFilter: (value: any, record: any) => record.status_id === Number(value),
     },
+    {
+      title: "Thông tin",
+      dataIndex: "information",
+      key: "information",
+      type: "text",
+      isEdit: true,
+      hidden: true,
+      searchable: true,
+    },
   ];
 
   const handleData = (data: any, type: string) => {
@@ -163,7 +172,7 @@ export const User: React.FC = () => {
         ...data,
         gender: convertStringToGender(data.gender),
         role_id: convertStringToRole(data.role_id),
-        status_id: convertStringToUserStatus(data.status_id),
+        status_id: data.status_id,
       };
       Object.keys(data).forEach((key) => {
         if (checkDateTypeKey(key)) {
@@ -220,12 +229,6 @@ export const User: React.FC = () => {
       const data = rawData.map((element) => handleData(element, "render"));
       setDataTable(data);
     }
-    if (
-      dataState.loadDoctorDataStatus === ApiLoadingStatus.Failed &&
-      dataState.errorMessage
-    ) {
-      showNotiError(dataState.errorMessage);
-    }
   }, [dataState.loadDoctorDataStatus]);
 
   React.useEffect(() => {
@@ -261,7 +264,8 @@ export const User: React.FC = () => {
   const handleEditFunction = () => {
     const userData = findElementById(dataTable, selectedData[0]);
     const dataEdit = handleData(userData, "edit-form");
-    modalUpdateRef.current?.open(dataEdit, columns, "horizontal");
+    console.log(dataEdit)
+    modalUpdateRef.current?.open(dataEdit, columns, "vertical");
   };
 
   const handleSubmitEditUser = (data: any) => {
@@ -277,7 +281,6 @@ export const User: React.FC = () => {
     <>
       <DataTable
         role={Context.role === userRole.admin ? userRole.admin : undefined}
-        addButton={Context.role === userRole.admin}
         editButton={Context.role === userRole.admin}
         deleteButton={Context.role === userRole.admin}
         column={columns}
