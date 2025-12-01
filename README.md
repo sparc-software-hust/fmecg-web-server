@@ -1,4 +1,8 @@
-fmECG Project is a biomedical system for measuring electrogram data using Flutter for Mobile App, NodeJS, Elixir for back-end and ReactJS for web admin.
+fmECG Project is a biomedical system for measuring electrogram data using Flutter for Mobile App, NextJS for back-end and ReactJS for web admin.
+
+> [!IMPORTANT]
+> In this project, team decides to separate web and server into 2 independent component with new repo. This repo will be marked as archived and not maintained. Reference only.
+
 
 ## 📒 Installation
 - [Normal Installation](https://github.com/techcomrade/fmECG/wiki/%5BInstallation%5D-Manual)
